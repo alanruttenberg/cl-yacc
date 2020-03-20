@@ -54,7 +54,7 @@
   (id nil :type (or null index))
   (symbol (required-argument) :type symbol)
   (derives (required-argument) :type list)
-  (action #'list :type function)
+  (action #'list :type (or function symbol))
   (action-form nil))
 
 (defun print-production (p s d)
@@ -771,7 +771,7 @@ If PROPAGATE-ONLY is true, ignore spontaneous generation."
                                          &key action action-form)))
   (symbol (required-argument) :type symbol)
   (length (required-argument) :type index)
-  (action #'list :type function)
+  (action #'list :type (or function symbol))
   (action-form nil))
 
 (defstruct (shift-action (:include action)
