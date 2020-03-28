@@ -1,0 +1,234 @@
+# 
+#+Title: Add mechanism for cl-yacc to handle repeats,alternatives,and optional elements.
+#+Author:  Alan Ruttenberg <alanruttenberg@gmail.com>
+#+Startup: noindent
+#+OPTIONS: tex:t toc:2 \n:nil @:t ::t |:t ^:nil -:t f:t *:t <:t
+#+STARTUP: noindent
+#+COMMENT: toc-org-insert-toc to update 
+
+#+begin_src lisp
+(in-package :yacc)
+#+end_src
+
+** An extended syntax for cl-yacc
+
+Takes a parsed production, which may include new syntax for optionals and repeats
+and construct a new grammer that cl-yacc can use. The extra syntax is:
+
+
+- (:+ ... 'action)  one or more repetitions
+- (:* ... 'action)  zero or more repetitions
+- (:? ... 'action)  optional - can be present or not
+- (:or ... 'action) alternatives
+
+Actions are optional. Default actions are
+
+- :+ return a list of the repetitions
+- :* if no repetitions then that element is just missing from. I don't like this. It should
+  return some recognizable token for empty (epsilon?) so that the action doesn't have to deal
+  with shifted arguments. FIXME
+- :? 'identity or action arg is absent. See :*. FIXME
+- :or 'identity 
+
+   
+It works by adding modified and new productions based on the old ones.
+
+- For :? it creates two productions, one with and one without the optional element.
+- For :* First it creates a new production to handle the repetition, then creates two modified 
+versions of the original production, one with the new production name in place, the other without.
+- For :+ As with :* except doesn't create the version without.
+- For :or Creates a set of productions, each of which has one of the alternatives. 
+
+One quirk: In EBNF there's an explicit concatenate operator "," and | has lower precedence. That means
+that if there are more than one token in an alternative they have to be parenthesized. Really only 
+an issue if you are translating from EBNF.
+
+In the below ~heads~ is/are the first part of a production/s during processing
+~tail~ is the rest of the production, and *aux* accumulates extra productions,
+and *production-counter* is used to name the extra productions.
+
+Transformation is done when there's no longer a tail, and the result is then the heads.
+
+#+begin_src lisp
+(defvar *production-counter*)
+
+(defvar *aux*)
+
+(defstruct (tstate (:conc-name "") (:constructor tstate (heads tail)) )
+  heads tail aux)
+  
+(defun fresh-production-name-s ()
+  (make-symbol (format nil "PRODUCTION-~aS" (incf *production-counter*))))
+
+(defun fresh-production-name ()
+  (make-symbol (format nil "PRODUCTION-~a" (incf *production-counter*))))
+
+(defun production-name-singular (s-name)
+  (make-symbol (subseq (string s-name) 0 (- (length (string s-name)) 1))))
+
+(defparameter *placeholder-mark* ':_)
+(defparameter $01 :?)
+(defparameter $1+ :+)
+(defparameter $0+ :*)
+(defparameter $or :or)
+(defparameter *operators* (list $01 $1+ $0+ $or))
+(defparameter *none* nil)
+
+
+(defun transform-grammar-1 (tstate)
+  (if (null (tail tstate))
+      tstate
+      (let ((heads (heads tstate))
+	    (tail (tail tstate)))
+	(cond ((and (consp (car tail)) (eq (caar tail) $or))
+	       (let* ((alternatives (cdr (pop tail))))
+		 (loop for alt in alternatives
+		       collect (transform-grammar-1 (tstate heads (cons alt (cdr tail)) )) into newstates
+		       finally (return (merge-heads newstates)))))
+	      ((and (consp (car tail)) (eq (caar tail) $01))
+	       (let* ((opt (car tail))
+		     (replacement (if (= (length (cdr opt)) 1)
+				   (cdr opt)
+				   (fresh-production-name))))
+		 (if (> (length (cdr opt)) 1) (push `(,(cdr opt) ,replacement) *aux*))
+		 (merge-heads (list (transform-grammar-1
+					     (tstate heads (cons replacement (cdr tail)) ))
+				    (transform-grammar-1 (tstate heads (cons *placeholder-mark* (cdr tail)) ))))))
+	      ((and (consp (car tail)) (eq (caar tail) :sequence))
+	       (transform-grammar-1 (tstate heads (append (cdr (car tail)) (cdr tail)) )))
+	      ((eq (car tail) :sequence)
+	       (transform-grammar-1 (tstate heads (cdr tail) )))
+	      ((member (car tail) *operators*)
+	       (transform-grammar-1 (tstate heads (list tail) )))
+	      ((and (consp (car tail)) (eq (caar tail) $1+))
+	       (let* ((what (cdr (car tail)))
+		      (existing (second (find what *aux* :test 'equalp :key 'car))))
+		 (if existing 
+		     (transform-grammar-1 (tstate heads (cons existing (cdr tail)) ))
+		     (let ((replacements (fresh-production-name-s)))
+		       (push (list what replacements :multiple) *aux*)
+		       (transform-grammar-1 (tstate heads (cons `($01 ,replacements) (cdr tail))))))))
+	      ((or (stringp (car tail)) (symbolp (car tail)))
+	       (let ((new-heads
+		       (if (null heads)
+			   (setq heads (list (list (car tail))))
+			   (loop for head in heads
+				 collect (append head (list (car tail)))))))
+		 (transform-grammar-1 (tstate new-heads (cdr tail) ))))
+	      ((and (consp (car tail) ) (or (member (caar tail) '(quote function))
+					    (functionp (caar tail)))))
+	      (t (transform-grammar-1 (tstate heads `((:sequence ,@(car tail)) ,@(cdr tail)))))))))
+
+(defun merge-heads (states)
+  (tstate (apply 'append (mapcar 'heads states)) nil))
+
+#+end_src
+Takes the set of productions and returns a new set. 
+#+begin_src lisp
+(defun transform-grammar (parsed-productions) 
+  (let* ((*production-counter* 0)
+	 (*aux* nil))
+    (append (loop for production in parsed-productions
+		  for head = (car production)
+		  for transformed = (transform-grammar-1 (tstate nil (second production)))
+		  collect (cons head (heads transformed)))
+	    (loop while *aux*
+		  for (body repeatsname) = (pop *aux*)
+		  for singlename = (production-name-singular repeatsname)
+		  collect (cons singlename (heads (transform-grammar-1 (tstate nil body))))
+		  collect `(,repeatsname
+			    (,singlename 'repetition-action)
+			    (,repeatsname ,singlename 'repetition-action))))))
+
+
+#+end_src
+
+#+begin_quote
+Every production is a list of a non-terminal symbol and one or more
+right hand sides.  Every right hand side is either a symbol, or a list
+of symbols optionally followed with an action.
+#_end_quote
+
+#+begin_src lisp
+(defun transform-yacc-grammar (yacc-input)
+  (let* ((*production-counter* 0)
+	 (*aux* nil))
+    (append (loop for (lhs . rh-sides) in yacc-input
+		  collect
+		  (loop for rhs in rh-sides
+			with action
+			if (atom rhs)
+			  collect rhs into rewritten
+			else 
+			  do (if (and (consp (car (last rhs))) (not (member (car (car (last rhs))) *operators*)))
+			      (progn (setq action (car (last rhs)))
+				     (setq rhs (butlast rhs)))
+			      (setq action ''list))
+			  and append
+				(let ((transformed (transform-grammar-1 (tstate nil rhs))))
+				  (mapcar (lambda(h) (fix-placeholders h action))
+					  (heads transformed))) into rewritten
+			finally (return `(,lhs ,@rewritten))))
+	    (finish-aux))))
+
+(defun finish-aux ()
+  (loop for (body name multiple) in *aux*
+	if multiple append (expand-multiple body name)
+	  else collect (list name body)))
+
+(defun expand-multiple (body repeatsname)
+  (let ((singlename (production-name-singular repeatsname)))
+    `((,singlename ,body)
+      (,repeatsname
+       (,singlename 'repetition-action)
+       (,repeatsname ,singlename 'repetition-action)))))
+
+(defun fix-placeholders (sequence action)
+  (if (member *placeholder-mark* sequence)
+      (let ((vars (loop repeat (length (remove *placeholder-mark* sequence)) collect (gensym))))
+	(setq action (eval `(lambda (,@vars)
+			      (funcall ,action ,@(loop for el in sequence
+						       if (eq el *placeholder-mark*) collect *none*
+							 else collect (pop vars))))))))
+  (append (remove *placeholder-mark* sequence) (list action)))
+  
+
+#+end_src
+
+* How to fix the missing optional problem.
+
+Right now the action for each top-level rhs is stripped before transformation and joined back after.
+Instead the action needs to be passed into the transformation.
+
+Then, when you have an optional in the including case you do nothing but in the 
+not included case you wrap the action in a function that takes the arguments 
+and inserts a nil (or some token) into the place where missing element would be 
+before passing the modified arguments to the defined action. 
+
+As things progress you may land up wrapping more than once.
+
+Another idea, leave placeholders and then determine functions later.
+(a (:? b) (:? c) d)
+->
+| Pattern   | w/placeholder | Action call                        | wrapper                       |
+| (a b c d) | (a b c d)     | (action first second third fourth) | none
+| (a b d)   | (a b _ d)     | (action first second nil third     | (lambda(a c d) (f a b nil d))                            |
+| (a c d)   | (a _ c d)     | (action first nil second third)    | (lambda(a c d) (f a nil c d)) |
+| (a d)     | (a _ _ d)     | (action first nil nil second)      | (lambda(a d) (f a nil nil d)) |
+|           |               |                                    |                               |
+
+If action is f, then wrapper is (lambda(
+
+
+
+#+begin_src lisp load no
+
+(defmacro insert-nil (position length action)
+  (let* ((args (loop repeat position collect (gensym)))
+	 (pre-nil (subseq args 0 (1- n)))
+	 (post-nil (subseq args (1- n))))
+    `(lambda(,@args)
+       (funcall ,action ,@pre-nil nil ,@post-nil))))
+
+
+#+end_src
