@@ -10,11 +10,10 @@
 
 (defsystem :yacc+/test
   :components 
-  ()
-  :serial t
+  ((:file  "yacc-tests"))
   :perform (test-op (op system)
 		    (format t "Running original yacc tests...~a~%"
-			    (if (load (system-relative-pathname :yacc+ "yacc-tests.lisp"))
+			    (if (funcall (intern "TESTS" "YACC-TESTS"))
 				"passed" "failed"))
 		    (load (system-relative-pathname :yacc+ "yacc+-tests.lisp")))
   )

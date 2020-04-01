@@ -1,17 +1,32 @@
-> (compile-file "yacc.lisp")
-> (load *)
-> (compile-file "yacc-tests.lisp")
-> (load *)
-> (yacc-tests:tests)
+This is an extended version of cl-yacc, that brings syntax for [optionals[], {repeats}, and alternates "|"
+You can use these in productions using the following syntax
+
+(:+ ... 'action)   one or more repetitions                                                         
+(:* ... 'action)   zero or more repetitions                                                        
+(:? ... 'action)   optional - can be present or not                                                
+(:or ... 'action)  alternatives. Usual notation is pipe but we can't comfortably use that in lisp. 
+
+To load and test the development version in org syntax.
+
+(asdf::load-system :yacc+)
+(asdf:test-system :yacc+)
+
+Or you can use the older sysdef to avoid external dependencies.
+
+(asdf:load-system :yacc)
+(compile-file "yacc-tests.lisp")
+(load *)
+(yacc-tests:tests)
 
 Note that you really must compile yacc-tests.lisp to a file in order to
 test the fasdumping machinery.
 
-Complete documentation is provided in texinfo format in ``cl-yacc.texi'',
-and you will find a complete example in the file ``calculator.lisp''.
+Documentation is provided in texinfo format in ``cl-yacc.texi'' and in yacc+.org.
+You will find a complete example in the file ``calculator.lisp''.
 
-The most recent version should be available from
+Credit to Juliusz Chroboczek whose github repository https://github.com/jech/cl-yacc I forked.
 
-    http://www.pps.jussieu.fr/~jch/software/cl-yacc/
 
-                                        Juliusz Chroboczek
+
+
+                                        
