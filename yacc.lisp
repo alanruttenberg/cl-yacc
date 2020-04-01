@@ -893,7 +893,7 @@ Returns three actions: the chosen action, the number of new sr and rr."
                      (shift-action :shift-reduce)
                      (t :reduce-reduce))
              :state id :terminal s
-             :format-control "~S and ~S~@[ ~_~A~]~@[ ~_~A~]"
+             :format-control "~S and ~S~%~@[ ~_~A~]~%~@[ ~_~A~]~%"
              :format-arguments (list a1 a2 p1 p2))))
     (typecase a1
       (shift-action (values a1 1 0))
@@ -1082,12 +1082,14 @@ Handle YACC-PARSE-ERROR to provide custom error reporting."
                     (pop stack)
                     (push (pop stack) vals))
                   (let ((s* (car stack)))
+;		    (:print-db (reduce-action-action action) vals)
                     (push (apply (reduce-action-action action) vals) stack)
                     (push (goto s* (reduce-action-symbol action)) stack))))
                (accept-action
                 (pop stack)
                 (return (pop stack)))
                (null
+;		(inspect stack)
                 (error (make-condition
                         'yacc-parse-error
                         :terminal (if (eq symbol 'yacc-eof-symbol) nil symbol)
@@ -1143,11 +1145,11 @@ Handle YACC-PARSE-ERROR to provide custom error reporting."
          (push (car form) options)
          (push (cadr form) options))
         ((symbolp (car form))
-         (setq productions (nconc (parse-production form) productions)))
+         (push form productions))
         (t
          (error "Unexpected grammar production ~S" form))))
     (values (nreverse options) (nreverse make-options)
-            (nreverse productions))))
+	    (mapcan 'parse-production (transform-yacc-productions (reverse productions))))))
 
 (defmacro define-grammar (name &body body)
   "DEFINE-GRAMMAR NAME OPTION... PRODUCTION...
@@ -1165,12 +1167,12 @@ MAKE-GRAMMAR."
                options))))
 
 (defmacro define-parser (name &body body)
-  "DEFINE-GRAMMAR NAME OPTION... PRODUCTION...
+  "DEFINE-PARSER NAME OPTION... PRODUCTION...
 PRODUCTION ::= (SYMBOL RHS...)
 RHS ::= SYMBOL | (SYMBOL... [ACTION])
 Defines the special variable NAME to be a parser.  Options are as in
 MAKE-GRAMMAR and MAKE-PARSER."
-  (multiple-value-bind (options make-options productions) (parse-grammar body)
+   (multiple-value-bind (options make-options productions) (parse-grammar body)
     `(defparameter ,name
       ',(apply #'make-parser
                (apply #'make-grammar

@@ -6,5 +6,6 @@
   :licence "MIT/X11"
   :description "A LALR(1) parser generator for Common Lisp"
   
-  :components ((:file "yacc"))
+  :components ((:file "yacc")
+	       (:file "yacc+"))
   )

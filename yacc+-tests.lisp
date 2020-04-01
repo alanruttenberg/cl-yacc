@@ -3,11 +3,16 @@
 (defparameter *yacc+-tests* nil)
 
 (defmacro yacc+test (why grammar &body sequences)
-  `(push (list ,why ',grammar ',sequences) *yacc+-tests*))
+  `(let ((already (find ',why *yacc+-tests* :test 'equalp :key 'car)))
+     (if already
+	 (setf (second already) ',grammar
+	       (third already) ',sequences)
+	 (push (list ,why ',grammar ',sequences) *yacc+-tests*))))
 
-(defun test-yacc+ ()
+(defun test-yacc+ (&optional which)
   (loop for (why grammar sequences) in (reverse *yacc+-tests*)
-	do (format t "Testing ~a (~a) ...~a~%"
+	if (or (not which) (equalp which why))
+	  do (format t "Testing ~a (~a) ...~a~%"
 		   why
 		   (length sequences)
 		   (if (test-yacc+-parser grammar sequences)
@@ -44,7 +49,6 @@
 	  (pprint grammar)
 	  (pprint defining-form))
 	result))))
-
 
 (yacc+test "Optionals"
     ((main 
@@ -150,5 +154,13 @@
   ((arg) (arg ))
   ((arg |,|  arg) (arg arg))
   ((arg |,|  arg |,| arg) (arg arg arg)))
+
+(yacc+test "Alternates with one being a sequence"
+    ((main
+      (a (:or b (c d) e))))
+  ((a b) (a b))
+  ((a c d) (a (c d)))
+  ((a e) (a e))
+  ((a b c) :error))
 
 (test-yacc+)

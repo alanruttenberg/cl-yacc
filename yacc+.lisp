@@ -11,9 +11,11 @@
 ;;   - [[#naming-productions-to-be-added][Naming productions to be added]]
 ;;   - [[#keeping-track-of-added-productions][Keeping track of added productions]]
 ;;   - [[#rewriting-a-sequence][Rewriting a sequence]]
-;;   - [[#transforming-a-yacc-grammar][Transforming a YACC grammar]]
+;;   - [[#transforming-a-grammar][Transforming a grammar]]
 ;;   - [[#constructed-the-added-productions][Constructed the added productions]]
 ;;   - [[#handling-placeholders][Handling placeholders]]
+;; - [[#hooking-cl-yacc][Hooking cl-yacc]]
+;; - [[#this-code-written-in-org-mode][This code written in org mode]]
 ;; - [[#testing][Testing]]
 ;; * Usage
 ;; We assume familiarity with [[https://github.com/jech/cl-yacc][cl-yacc]], which this code extends.
@@ -26,13 +28,9 @@
 ;; repetitions, which are gathered into a list.  Supplying the actions is
 ;; optional. The default actions in all cases is 'identity if the clause
 ;; has a single element and 'list otherwise.
-;; This code is written in org mode using [[https://github.com/alanruttenberg/lilith][lilith]]. For convenience a lisp version
-;; is in the same directory, generated with
-;; (tangle-org-file (asdf::system-relative-pathname "yacc++.org")
-;; 		 :output-file (asdf::system-relative-pathname "yacc++.lisp"))
 ;; * Overview
-;; The code takes a grammar, which may include the new syntax and
-;; constructs a new grammer that cl-yacc can use. It works by replacing
+;; The idea is to take a grammar, which may include the new syntax, and
+;; construct a new grammer that cl-yacc can use. It works by replacing
 ;; productions that use the syntax with modified ones based on them and
 ;; by adding new productions where necessary.
 ;; | *:?*  | Creates two productions, copying all but the :? form. One has the optional element one doesn't.                                                                                                                  |
@@ -40,6 +38,9 @@
 ;; | *:**  | As with :+ but makes it optional.                                                                                                                                                                                |
 ;; | *:or* | Creates a set of productions, each of which has one of the alternatives and a copy of the rest. Originally I made a single new production with the alternatives, but that didn't work well with precedence rule. |
 ;; * Implementation 
+
+(in-package :yacc)
+
 ;; The main rewrite operates on a sequence - the body of one element of a
 ;; production.  The elements in the sequenced are processed in order. The
 ;; rewrite is recursive, with the state held in the ~tstate~ structure. As
@@ -70,9 +71,12 @@
 ;; New productions names are created with make-symbol, so as not to
 ;; conflict with elements of the original grammar, and numbered
 ;; sequentially. ~*new-production-counter*~ is the counter. 
+;; For debugging purposes you can override this to have the production 
+;; names interned in the current package by setting ~*new-productions-in-package*~.
 
 (defvar *new-production-counter*)
 (defvar *new-production-prefix* "PRODUCTION-")
+(defvar *new-productions-in-package* nil)
 
 ;; There are two types of new productions, one for the operated on elements
 ;; and one that handles multiples of the first. The name of the production that gathers
@@ -82,13 +86,22 @@
 ;; the "s".
 
 (defun fresh-production-name-s ()
-  (make-symbol (format nil "PRODUCTION-~aS" (incf *new-production-counter*))))
+  (let ((name (format nil "PRODUCTION-~aS" (incf *new-production-counter*))))
+    (if *new-productions-in-package*
+	(intern name)
+	(make-symbol name))))
 
 (defun fresh-production-name ()
-  (make-symbol (format nil "PRODUCTION-~a" (incf *new-production-counter*))))
+  (let ((name (format nil "PRODUCTION-~a" (incf *new-production-counter*))))
+    (if *new-productions-in-package*
+	(intern name)
+	(make-symbol name))))
 
 (defun production-name-singular (s-name)
-  (make-symbol (subseq (string s-name) 0 (- (length (string s-name)) 1))))
+  (let ((name (subseq (string s-name) 0 (- (length (string s-name)) 1))))
+    (if *new-productions-in-package*
+	(intern name)
+	(make-symbol name))))
 
 ;; ** Keeping track of added productions
 ;; A global, ~*aux*~ accumulates the extra productions. 
@@ -116,8 +129,8 @@
 
 ;; ** Rewriting a sequence
 ;; ~transform-sequence~ is the main recursive function. It calls functions
-;; to do the different rewrites.    
-;; *** Rewriting $? 
+;; to handle the different cases.
+;; *** Rewriting \$? 
 ;; The simple idea is to create two productions, one with and one without the 
 ;; element. However, this doesn't work when there is more than one element in the
 ;; in the clause.
@@ -125,13 +138,12 @@
 ;; Our general rule is that each element is one argument to the action. So,
 ;; when there is more than one element we create a production for the
 ;; optional part, and recurse on the rest. 
-;; Because we have two calls to transform sequence. Calls to transform
-;; sequence will only return when the rest of the sequence is processed 
-;; at which the only important thing is returning the heads (now complete).
-;; ~merge-heads~ returns a tstate with the two sets of heads appended.
+;; Calls to transform sequence will only return when the rest of the
+;; sequence is processed at which the only important thing is returning the
+;; heads (now complete).  ~merge-heads~ returns a tstate with the two sets
+;; of heads appended.
 ;; For the case where we're removing the clause, we leave a placeholder, 
 ;; which we'll process out in a later step.
-
 
 (defun transform-optional (state)
   (let* ((opt (car (tail state)))
@@ -161,11 +173,14 @@
 ;;  (prod1s prod1 'repetition-action))
 ;; ~transform-+~ handles both cases, begin passed the operator as an argument. 
 ;; If $* the $+ rewrite is wrapped in an optional (:?).
-;; Each call to transform-sequence is sequentially processing each of the
-;; accumulated heads, looking at the same head, which would cause creation of the 
-;; production. To avoid that we check whether we've already made the production
-;; by looking on ~*aux*~, and if we find something we use the name ~already-in-aux~
+;; Each call to transform-sequence is independently processing each of the
+;; accumulated heads, each of which sees the new tail. Without intervention
+;; the same pair of productions would be recreated for each. To avoid that
+;; we check whether we've already made the production by looking on
+;; ~*aux*~, and if we find something we use the name ~already-in-aux~
 ;; returns.
+;; The additional productions prod1 and prod1s are created in a second pass.
+;; For now we record just the sequence (b c) and the name of the plural prod1s.
 
 (defun transform-+ (state &optional operator)
   (let* ((what (cdr (car (tail state))))
@@ -181,21 +196,24 @@
 ;; *** Rewriting alternates
 ;; We create modified versions of the original, in each case substituting
 ;; one of the alternatives. As in transform-optional, we merge the heads
-;; once we're done.
-;; (a (:or b c d))
-;; ->
-;; (a b)
-;; (a c)
-;; (a d)
-;; One delta from EBNF is that there's currently no way to write the equivalent of
-;; a | b c | d 
-;; which is parsed a or (b c) or d. We don't have a sequence operator to do the grouping, although
-;; I could allow parentheses. Maybe fix.
+;; once we're done. Parentheses are allowed to group elements of an alternate.
+;; (main
+;;  (a (:or b (c d))))
+;; is rewritten as
+;; (main 
+;;   (a b)
+;;   (a prod1)
+;; (prod1
+;;   (c d))
 
 (defun transform-alternates (state)
   (let* ((alternatives (cdr (car (tail state)))))
     (loop for alt in alternatives
-	  collect (transform-sequence (tstate (heads state) (cons alt (cdr (tail state))) )) into newstates
+	  collect 
+	  (if (and (consp alt) (not (member (car alt) *operators*)))
+	      (transform-sequence (tstate (heads state) (cons (add-single-aux alt) (cdr (tail state))) ))
+	      (transform-sequence (tstate (heads state) (cons alt (cdr (tail state))) )))
+	    into newstates
 	  finally (return (merge-heads newstates)))))
 
 ;; *** Consuming the next simple element in the sequence
@@ -219,7 +237,13 @@
       tstate
       (let ((heads (heads tstate))
 	    (tail (tail tstate)))
-	(cond ((and (consp (car tail)) (eq (caar tail) $or))
+	(cond ((atom tail)
+		(tstate 
+		 (if heads 
+		     (mapcar (lambda(head) (append head (list (car tail)))) heads)
+		     `(,tail))
+		 nil))
+	      ((and (consp (car tail)) (eq (caar tail) $or))
 	       (transform-alternates tstate))
 
 	      ((and (consp (car tail)) (eq (caar tail) $01))
@@ -245,7 +269,7 @@
 	      (t (error "Should never get here"))
 	      ))))
 
-;; ** Transforming a YACC grammar
+;; ** Transforming a grammar
 ;; Takes the set of productions and returns a new set. 
 ;; Every production is a list of a non-terminal symbol and one or more
 ;; right hand sides.  Every right hand side is either a symbol, or a list
@@ -359,20 +383,36 @@
 (defconstant *nothing* nil)
 
 (defun fix-placeholders (sequence)
-  (let ((action (sequence-has-action? sequence)))
-    (if action
-	(setq sequence (butlast sequence))
-	(setq action ''list))
-    (if (member *placeholder-mark* sequence)
-	(let ((vars (loop repeat (length (remove *placeholder-mark* sequence)) collect (gensym))))
-	  (setq action `(lambda (,@vars)
-			  (funcall ,action 
-				   ,@(loop for el in sequence
-					   if (eq el *placeholder-mark*) collect *nothing*
-					     else collect (pop vars)))))))
-    (append (remove *placeholder-mark* sequence)
-	    (list action))))
+  (if (atom sequence)
+      sequence
+      (let ((action (sequence-has-action? sequence)))
+	(if action
+	    (setq sequence (butlast sequence))
+	    (setq action ''list))
+	(when (member *placeholder-mark* sequence)
+	  (let ((vars (loop repeat (length (remove *placeholder-mark* sequence)) collect (gensym))))
+	    (setq action (symbol-function
+			  (compile (gensym)
+				   `(lambda (,@vars)
+				      (funcall ,action 
+					       ,@(loop for el in sequence
+						       if (eq el *placeholder-mark*) collect *nothing*
+							 else collect (pop vars)))))))))
+	(append (remove *placeholder-mark* sequence)
+		(list action)))))
 
+;; * Hooking cl-yacc
+;; In make-grammar, instead of calling make-production on each production while iterating, collect them. Then 
+;; transform the collection, then collect make-production on each of transformed productions.
+;; * This code written in org mode
+;; This code is written in org mode using [[https://github.com/alanruttenberg/lilith][lilith]]. For convenience a lisp version
+;; is in the same directory, generated with
+;; (lp::tangle-org-file (asdf::system-relative-pathname "yacc" "yacc+.org")
+;; 		     :output-file (asdf::system-relative-pathname "yacc" "yacc+.lisp"))
+;; The original yacc.asd includes the lisp file.
+;; yacc+.asd loads the org file directly, and provides an asdf test op.
 ;; * Testing
-;; Tests are in yacc+-tests.lisp. Load it to run the tests.
+;; If you are using yacc.asd, tests are in yacc-tests.lisp and yacc+-tests.lisp.
+;; Loading these run the tests. Rerun the yacc+ tests with (test-yacc+).
+;; If you are using yacc+.asd then (asdf:test-system :yacc+)
 
