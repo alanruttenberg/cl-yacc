@@ -147,9 +147,9 @@ have to find the name of an existing production. ~already-in-aux~ takes the
 basis of the new production and returns it's name.
 
 #+begin_src lisp
-(defun add-plural-aux (what)
+(defun add-plural-aux (what is-optional)
   (let ((replacements (fresh-production-name-s)))
-    (push (list what replacements :multiple) *aux*)
+    (push (list what replacements :multiple is-optional) *aux*)
     replacements))
 
 (defun add-single-aux (what)
@@ -159,6 +159,10 @@ basis of the new production and returns it's name.
 
 (defun already-in-aux (what)
   (second (find what *aux* :test 'equalp :key 'car)))
+
+(defun aux-production-is-optional (name)
+  (if (consp name) (setq name (car name)))
+  (fourth (find name *aux* :key 'second)))
 #+end_src
 
 ** Rewriting a sequence
@@ -226,7 +230,8 @@ This gets rewritten as
 #+end_src
 
 ~transform-+~ handles both cases, begin passed the operator as an argument. 
-If $* the $+ rewrite is wrapped in an optional (:?).
+If $* the $+ rewrite the production is marked as being optional. The optionality
+will manifest in consume-next.
 
 Each call to transform-sequence is independently processing each of the
 accumulated heads, each of which sees the new tail. Without intervention
@@ -244,12 +249,11 @@ For now we record just the sequence (b c) and the name of the plural prod1s.
 	 (existing (already-in-aux what)))
     (if existing 
 	(transform-sequence (tstate (heads state) (cons existing (cdr (tail state))) ))
-	(let ((replacements (add-plural-aux what)))
+	(let ((replacements (add-plural-aux what (eq operator $0+))))
 	  (transform-sequence
 	   (tstate (heads state)
-		   (cons (if (eq operator $1+) replacements `(,$01 ,replacements))
-			 (cdr (tail state)))))))))
-#+end_src 
+		   (cons replacements (cdr (tail state)))))))))
+#+end_src
 
 *** Rewriting alternates
 
@@ -277,7 +281,7 @@ is rewritten as
   (let* ((alternatives (cdr (car (tail state)))))
     (loop for alt in alternatives
 	  collect 
-	  (if (and (consp alt) (not (member (car alt) *operators*)))
+	  (if  (and (consp alt) (not (member (car alt) *operators*)))
 	      (transform-sequence (tstate (heads state) (cons (add-single-aux alt) (cdr (tail state))) ))
 	      (transform-sequence (tstate (heads state) (cons alt (cdr (tail state))) )))
 	    into newstates
@@ -286,15 +290,25 @@ is rewritten as
 
 *** Consuming the next simple element in the sequence
 
-Consuming the next simple element is straightforward - just pop it 
-off the tail and add it to the end of each head.
+Consuming the next simple element is mostly straightforward - just pop it 
+off the tail and add it to the end of each head. The exception
+is when we are consuming a token marked as optional. In that case
+also include a transformation with a placeholder in place of the 
+token.
+
+(transform-sequence #S(tstate :HEADS nil :TAIL (#:production-1s 'identity))) 
+   3> Calling (aux-production-is-optional #:production-1s) t 
      
 #+begin_src lisp
 (defun consume-next (state)
   (let ((new-heads
 	  (if (null (heads state))
-	      (list (list (car (tail state))))
+	      (list* (list (car (tail state)))
+		     (if (aux-production-is-optional (car (tail state)))
+			 (list (list *placeholder-mark*))))
 	      (loop for head in (heads state) 
+		    when (aux-production-is-optional (car (tail state)))
+		      collect (append head (list *placeholder-mark*))
 		    collect (append head (list (car (tail state))))))))
     (transform-sequence (tstate new-heads (cdr (tail state)) ))))
 #+end_src
@@ -339,7 +353,7 @@ Returns the accumulated state if tail is nil.
 		    (null (cdr tail)))
 	       (tstate (mapcar (lambda(head) (append head (list (car tail)))) heads) nil))
 
-	      (t (error "Should never get here"))
+	      (t (error "Syntax error in production: ~a" tail))
 	      ))))
 #+end_src
 
@@ -385,7 +399,7 @@ keep processing it until empty.
 	until (null *aux*)
 	do (pop *aux*)
 	if multiple append (expand-repetition body name)
-	  else collect (list name body)))
+	  else collect (expand-singular-aux body name)))
 #+end_src
 
 For repetitions we'll create two productions.
@@ -434,6 +448,18 @@ transformed, so we do that here, and also fix the placeholders.
       (,repeatsname
        (,singlename 'repetition-action )
        (,repeatsname ,singlename 'repetition-action)))))
+
+(defun expand-singular-aux (body name)
+  (let ((has-action (sequence-has-action? body)))
+    `(,name ,@(loop for head in (heads (transform-sequence (tstate nil body)))
+		    for head-with-action = (if has-action
+					       head
+					       (append head (list (if (> (length head) 1)
+								      ''list
+								      ''identity))))
+		    collect (fix-placeholders head-with-action)))))
+
+
 #+end_src
 
 The repetition action accumulates into a list. If called with one argument it
@@ -515,7 +541,7 @@ action here, if one isn't supplied we default it to 'list.
       (let ((action (sequence-has-action? sequence)))
 	(if action
 	    (setq sequence (butlast sequence))
-	    (setq action ''list))
+	    (setq action (if (> (length sequence) 1) ''list ''identity)))
 	(when (member *placeholder-mark* sequence)
 	  (let ((vars (loop repeat (length (remove *placeholder-mark* sequence)) collect (gensym))))
 	    (setq action (symbol-function

@@ -163,4 +163,11 @@
   ((a e) (a e))
   ((a b c) :error))
 
+(yacc+test "alternates followed by repetition"
+    ((main
+      ((:or a b) (:* c))))
+  ((a) (a nil))
+  ((b) (b nil))
+  ((a c) (a (c))))
+
 (test-yacc+)
