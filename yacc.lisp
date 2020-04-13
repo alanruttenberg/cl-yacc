@@ -1082,14 +1082,12 @@ Handle YACC-PARSE-ERROR to provide custom error reporting."
                     (pop stack)
                     (push (pop stack) vals))
                   (let ((s* (car stack)))
-;		    (:print-db (reduce-action-action action) vals)
                     (push (apply (reduce-action-action action) vals) stack)
                     (push (goto s* (reduce-action-symbol action)) stack))))
                (accept-action
                 (pop stack)
                 (return (pop stack)))
                (null
-;		(inspect stack)
                 (error (make-condition
                         'yacc-parse-error
                         :terminal (if (eq symbol 'yacc-eof-symbol) nil symbol)
@@ -1172,7 +1170,7 @@ PRODUCTION ::= (SYMBOL RHS...)
 RHS ::= SYMBOL | (SYMBOL... [ACTION])
 Defines the special variable NAME to be a parser.  Options are as in
 MAKE-GRAMMAR and MAKE-PARSER."
-   (multiple-value-bind (options make-options productions) (parse-grammar body)
+  (multiple-value-bind (options make-options productions) (parse-grammar body)
     `(defparameter ,name
       ',(apply #'make-parser
                (apply #'make-grammar

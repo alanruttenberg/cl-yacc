@@ -14,7 +14,12 @@
 ;;   - [[#transforming-a-grammar][Transforming a grammar]]
 ;;   - [[#constructed-the-added-productions][Constructed the added productions]]
 ;;   - [[#handling-placeholders][Handling placeholders]]
-;; - [[#hooking-cl-yacc][Hooking cl-yacc]]
+;; - [[#modifications-to-the-original-yacclisp][Modifications to the original yacc.lisp]]
+;;   - [[#transforming-productions][Transforming productions]]
+;;   - [[#not-forcing-actions-to-be-functions][Not forcing actions to be functions]]
+;;   - [[#fix-a-doc-string-copypaste-typo][Fix a doc string copy/paste typo]]
+;;   - [[#make-the-production-conflict-error-message-slightly-easier-to-read][Make the production conflict error message slightly easier to read]]
+;; - [[#other-desiderata][Other desiderata]]
 ;; - [[#this-code-written-in-org-mode][This code written in org mode]]
 ;; - [[#testing][Testing]]
 ;; * Usage
@@ -226,8 +231,6 @@
 ;; is when we are consuming a token marked as optional. In that case
 ;; also include a transformation with a placeholder in place of the 
 ;; token.
-;; (transform-sequence #S(tstate :HEADS nil :TAIL (#:production-1s 'identity))) 
-;;    3> Calling (aux-production-is-optional #:production-1s) t 
 
 (defun consume-next (state)
   (let ((new-heads
@@ -403,7 +406,8 @@
 ;; | (a c d)   | (a _ c d)     | (action first nil second third)    | (lambda(a c d) (action a nil c d)) |
 ;; | (a d)     | (a _ _ d)     | (action first nil nil second)      | (lambda(a d) (action a nil nil d)) |
 ;; ~fix-placeholders~ does this work. Note that since we /need/ the original
-;; action here, if one isn't supplied we default it to 'list.
+;; action here, if one isn't supplied we default it to 'identity 'list, depending on the whether 
+;; the sequence is length 1 or more.
 
 (defconstant *nothing* nil)
 
@@ -426,16 +430,79 @@
 	(append (remove *placeholder-mark* sequence)
 		(list action)))))
 
-;; * Hooking cl-yacc
-;; In make-grammar, instead of calling make-production on each production while iterating, collect them. Then 
-;; transform the collection, then collect make-production on each of transformed productions.
+;; * Modifications to the original yacc.lisp
+;; ** Transforming productions 
+;; In make-grammar, instead of calling make-production on each production
+;; while iterating, collect them. Then transform the collection, then
+;; collect make-production on each of transformed productions.  
+;; @@ -1143,11 +1145,11 @@ Handle YACC-PARSE-ERROR to provide custom error reporting."
+;;           (push (car form) options)
+;;           (push (cadr form) options))
+;;          ((symbolp (car form))
+;; -         (setq productions (nconc (parse-production form) productions)))
+;; +         (push form productions))
+;;          (t
+;;           (error "Unexpected grammar production ~S" form))))
+;;      (values (nreverse options) (nreverse make-options)
+;; -            (nreverse productions))))
+;; +	    (mapcan 'parse-production (transform-yacc-productions (reverse productions))))))
+;; ** Not forcing actions to be functions
+;; While developing a production one thing that got in my way was that
+;; actions needed to be functions. That meant that if you were debugging
+;; an action, each time you redefined the action you needed to recompile
+;; the parser. I changed that to allow actions to be symbols.
+;; In defstruct production:
+;; @@ -54,6 +54,6 @@
+;;    (id nil :type (or null index))
+;;    (symbol (required-argument) :type symbol)
+;;    (derives (required-argument) :type list)
+;; -  (action #'list :type function)
+;; +  (action #'list :type (or function symbol))
+;;    (action-form nil))
+;; In defstruct grammar:
+;; @@ -771,7 +771,7 @@ If PROPAGATE-ONLY is true, ignore spontaneous generation."
+;;                                           &key action action-form)))
+;;    (symbol (required-argument) :type symbol)
+;;    (length (required-argument) :type index)
+;; -  (action #'list :type function)
+;; +  (action #'list :type (or function symbol))
+;;    (action-form nil))
+;; ** Fix a doc string copy/paste typo
+;; Doc string for define-parser was copied from define-grammar.
+;; @@ -1165,6 +1167,6 @@ MAKE-GRAMMAR."
+;;                 options))))
+;;  (defmacro define-parser (name &body body)
+;; -  "DEFINE-GRAMMAR NAME OPTION... PRODUCTION...
+;; +  "DEFINE-PARSER NAME OPTION... PRODUCTION...
+;;  PRODUCTION ::= (SYMBOL RHS...)
+;;  RHS ::= SYMBOL | (SYMBOL... [ACTION])
+;; ** Make the production conflict error message slightly easier to read
+;; By adding a couple of carriage returns. In handle-conflict:
+;; @@ -893,7 +893,7 @@ Returns three actions: the chosen action, the number of new sr and rr."
+;;                       (shift-action :shift-reduce)
+;;                       (t :reduce-reduce))
+;;               :state id :terminal s
+;; -             :format-control "~S and ~S~@[ ~_~A~]~@[ ~_~A~]"
+;; +             :format-control "~S and ~S~%~@[ ~_~A~]~%~@[ ~_~A~]~%"
+;;               :format-arguments (list a1 a2 p1 p2))))
+;;      (typecase a1
+;;        (shift-action (values a1 1 0))
+;; [[https://github.com/jech/cl-yacc/compare/master...alanruttenberg:master#diff-297110d120c6da5a49605c450bba5eff][View diff to jech's yacc.lisp on github]]
+;; Note: When there's a conflict there is at least 2, and sometimes 3 copies of the error 
+;; reported, inflating the number of reported conflicts. I Haven't tracked that down and fixed
+;; it yet.
+;; * Other desiderata
+;; More debugging support. While one can trace the actions, it would be helpful if there
+;; was a mode in which yacc reported, as it consumed each token, which productions
+;; were still candidate, and when an action taken, what the action and args were, and which
+;; production triggered it. Patches welcome.
 ;; * This code written in org mode
 ;; This code is written in org mode using [[https://github.com/alanruttenberg/lilith][lilith]]. For convenience a lisp version
 ;; is in the same directory, generated with
 ;; (lp::tangle-org-file (asdf::system-relative-pathname "yacc" "yacc+.org")
 ;; 		     :output-file (asdf::system-relative-pathname "yacc" "yacc+.lisp"))
 ;; The original yacc.asd includes the lisp file.
-;; yacc+.asd loads the org file directly, and provides an asdf test op.
+;; yacc+.asd loads the org file directly, and provides an asdf test-op.
 ;; * Testing
 ;; If you are using yacc.asd, tests are in yacc-tests.lisp and yacc+-tests.lisp.
 ;; Loading these run the tests. Rerun the yacc+ tests with (test-yacc+).
